@@ -16,7 +16,8 @@ fi
 
 # Check the code before touching the running services
 for f in $SCRIPTS; do
-    python3 -m py_compile "$SRC/$f"
+    # Syntax check only: py_compile would leave root-owned __pycache__ in the repo
+    python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$SRC/$f"
 done
 
 id radar >/dev/null 2>&1 || useradd --system --home-dir "$DEST" --shell /usr/sbin/nologin radar

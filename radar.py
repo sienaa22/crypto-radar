@@ -124,8 +124,12 @@ SCHEMA = """
         body TEXT NOT NULL);
 """
 
-# An alert waiting to be queued: unique key within its source, and the message
-Item = namedtuple("Item", "key project link text")
+# An alert waiting to be queued: unique key within its source, the message, and
+# when the item was created (ISO text from the source, "" if unknown)
+Item = namedtuple("Item", "key project link text created")
+# Listing items older than this are recorded without an alert: an old contest
+# or program that shows up late (e.g. after a paging change) is not news
+MAX_ITEM_AGE_DAYS = 30
 STARTED = "__started__"  # recorded on a source's first run, even when it had no items
 
 
@@ -499,10 +503,19 @@ def check_defillama_repo(conn: sqlite3.Connection, gh: GitHub, source: str, repo
 # Sources: listings (audit contests, competitions, bounty programs)
 # ---------------------------------------------------------------------------
 
+def is_recent(created: str) -> bool:
+    """True if an ISO date/time is within MAX_ITEM_AGE_DAYS, or unknown."""
+    try:
+        when = datetime.fromisoformat(created[:19].replace("Z", "")).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    return (datetime.now(timezone.utc) - when).days <= MAX_ITEM_AGE_DAYS
+
+
 def check_listing(conn: sqlite3.Connection, source: str, items: List[Item]) -> Tuple[int, int]:
     """
-    Queues an alert for every item not seen before. The first run of a source
-    only records what exists. Items should be ordered oldest first.
+    Queues an alert for every recent item not seen before. The first run of a
+    source only records what exists. Items should be ordered oldest first.
     """
     new_items = [i for i in items if not is_seen(conn, source, i.key)]
     if source_is_empty(conn, source):
@@ -512,6 +525,13 @@ def check_listing(conn: sqlite3.Connection, source: str, items: List[Item]) -> T
             for item in new_items:
                 mark_seen(conn, source, item.key)
         return 0, len(new_items)
+    old = [i for i in new_items if not is_recent(i.created)]
+    if old:
+        log("{}: {} old items recorded without alert".format(source, len(old)))
+        with conn:
+            for item in old:
+                mark_seen(conn, source, item.key)
+        new_items = [i for i in new_items if i not in old]
     for item in new_items:
         queue_alert(conn, source, item)
     return len(new_items), 0
@@ -580,7 +600,7 @@ def check_audit_org(conn: sqlite3.Connection, gh: GitHub, org: str, label: str) 
             "Link: {link}"
         ).format(label=label, project=project, org=org, name=r.get("name", ""),
                  created=repo_created(r), desc=(r.get("description") or "none")[:200], link=link)
-        items.append(Item(key, project, link, text))
+        items.append(Item(key, project, link, text, r.get("created_at") or ""))
     return check_listing(conn, source, items)
 
 
@@ -605,7 +625,7 @@ def check_hats(conn: sqlite3.Connection, gh: GitHub) -> Tuple[int, int]:
             "Created: {created}\n"
             "Link: {link}"
         ).format(project=project, org=HATS_ORG, name=name, created=repo_created(r), link=link)
-        items.append(Item(hats_key(name), project, link, text))
+        items.append(Item(hats_key(name), project, link, text, r.get("created_at") or ""))
     return check_listing(conn, source, items)
 
 
@@ -629,7 +649,7 @@ def check_cantina(conn: sqlite3.Connection, gh: GitHub) -> Tuple[int, int]:
                  pot=money_text(c.get("totalRewardPot"), c.get("currencyCode") or ""),
                  status=c.get("status") or "?", kind=(c.get("kind") or "?").replace("_", " "),
                  created=(c.get("createdAt") or "?")[:10], link=link)
-        items.append(Item(c["id"], company, link, text))
+        items.append(Item(c["id"], company, link, text, c.get("createdAt") or ""))
     return check_listing(conn, "cantina", items)
 
 
@@ -661,7 +681,7 @@ def check_immunefi(conn: sqlite3.Connection, gh: GitHub) -> Tuple[int, int]:
                  eco=", ".join(p.get("ecosystem") or []) or "unknown",
                  scope=", ".join(p.get("programType") or []) or "unknown",
                  launch=(p.get("launchDate") or "?")[:10], link=immunefi_link(slug))
-        items.append(Item(slug, project, immunefi_link(slug), text))
+        items.append(Item(slug, project, immunefi_link(slug), text, p.get("launchDate") or ""))
     return check_listing(conn, "immunefi", items)
 
 

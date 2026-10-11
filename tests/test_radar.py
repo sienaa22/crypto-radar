@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from datetime import datetime, timezone
 import unittest
 import urllib.parse
 
@@ -16,7 +17,10 @@ def pr(n, created, updated, merged=False):
             "base": {"sha": "base%d" % n}}
 
 
-def repo(name, created="2026-01-01T00:00:00Z"):
+RECENT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def repo(name, created=RECENT):
     return {"name": name, "created_at": created, "html_url": "https://gh/" + name,
             "description": None}
 
@@ -131,7 +135,7 @@ class RadarFlowTest(unittest.TestCase):
             w.orgs["code-423n4"]
         w.cantina.append({"id": "c2", "name": "Fresh Comp", "company": {"name": "FreshCo"},
                           "totalRewardPot": "50000", "currencyCode": "USDC",
-                          "status": "live", "kind": "public_contest", "createdAt": "2026-03-01",
+                          "status": "live", "kind": "public_contest", "createdAt": RECENT,
                           "url": "https://cantina.xyz/competitions/c2"})
         self.tg.ok = False
         self.run_check()
@@ -192,6 +196,23 @@ class RadarFlowTest(unittest.TestCase):
         text = radar.build_status(self.conn, self.radar.gh, self.radar.sources, 900)
         self.assertIn("✅ Project Radar", text)
         self.assertIn("➖ Whale Watch: no database yet", text)
+
+
+class OldItemsTest(unittest.TestCase):
+    def test_old_contests_found_late_are_not_alerted(self):
+        conn = common.open_db(temp_db_path(), radar.SCHEMA)
+        gh = radar.GitHub(conn, "")
+        org = {"code-423n4": [repo("2026-01-first")]}
+        gh.get = lambda url, cache=False: (org["code-423n4"], None)
+        self.assertEqual(radar.check_audit_org(conn, gh, "code-423n4", "Code4rena"), (0, 1))
+        # A wider page now shows older contests that were never stored, and one new one
+        org["code-423n4"] = [repo("2026-10-fresh"), repo("2026-01-first"),
+                             repo("2025-01-initia-modules", "2025-01-03T23:44:27Z"),
+                             repo("2025-02-blend", "2025-02-06T18:07:05Z")]
+        self.assertEqual(radar.check_audit_org(conn, gh, "code-423n4", "Code4rena"), (1, 0))
+        (text,) = [r[0] for r in conn.execute("SELECT text FROM outbox")]
+        self.assertIn("Project: fresh", text)
+        self.assertEqual(radar.check_audit_org(conn, gh, "code-423n4", "Code4rena"), (0, 0))
 
 
 class UpgradeTest(unittest.TestCase):
