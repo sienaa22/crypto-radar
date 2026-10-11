@@ -1,0 +1,9 @@
+radar.env
+*.env
+!radar.env.example
+*.db
+*.db-shm
+*.db-wal
+*.csv
+*.bak
+__pycache__/

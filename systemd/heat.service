@@ -1,0 +1,30 @@
+[Unit]
+Description=Heat Analyzer (DeFi fundamentals-ahead-of-price daily report)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radar
+WorkingDirectory=/opt/radar
+ExecStart=/usr/bin/python3 -u /opt/radar/heat.py --env /opt/radar/radar.env
+Restart=always
+RestartSec=120
+
+# Hardening: the script only needs network access and write access to /opt/radar
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/radar
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
