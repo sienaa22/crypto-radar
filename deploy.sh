@@ -6,8 +6,8 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST=/opt/radar
-SCRIPTS="common.py ai.py radar.py whales.py heat.py attention.py news.py flows.py brain.py"
-SERVICES="radar whales heat attention news flows brain"
+SCRIPTS="common.py ai.py radar.py whales.py heat.py attention.py news.py flows.py brain.py chain.py pulse.py"
+SERVICES="radar whales heat attention news flows brain chain pulse"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run with sudo: sudo $0" >&2
@@ -60,4 +60,4 @@ done
 sleep 3
 systemctl --no-pager --lines=0 status $SERVICES || true
 echo
-echo "Follow the logs with:  journalctl -u radar -u whales -u heat -u attention -u news -u flows -u brain -f"
+echo "Follow the logs with:  journalctl -u radar -u whales -u heat -u attention -u news -u flows -u brain -u chain -u pulse -f"

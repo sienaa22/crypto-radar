@@ -1,6 +1,6 @@
 # Crypto Radar
 
-Seven small services that watch public data for early crypto signals and send
+Nine small services that watch public data for early crypto signals and send
 them to Telegram. Python 3.8+ standard library only, no packages to install.
 
 | Service | Script | What it sends |
@@ -11,7 +11,9 @@ them to Telegram. Python 3.8+ standard library only, no packages to install.
 | Attention Radar | `attention.py` | Daily list of coins that several independent sources point at |
 | Flow Watch | `flows.py` | Binance futures positioning (open-interest build-ups, crowded funding, top traders against the crowd) and USDT/USDC supply read from Ethereum and Tron |
 | Signal Hub | `brain.py` | Prices every signal from every service, scores each kind against BTC after 1 and 7 days, learns weights from that, and sends CONVERGENCE alerts when independent signals line up on one coin |
-| News Watch | `news.py` | Token unlocks (large cliffs ahead, investor/team vesting ending), exchange listings (Binance, Upbit, Bybit, OKX, Coinbase), hacks, and important headlines from four news sites |
+| News Watch | `news.py` | Token unlocks (large cliffs ahead, investor/team vesting ending), exchange listings (Binance, Upbit, Bybit, OKX, Coinbase), markets created before trading opens (Binance, Bybit, OKX) and new Korean won markets, hacks, and important headlines from four news sites |
+| Wallet Watch | `chain.py` | Funds, market makers, known people and Hyperliquid traders on Ethereum and Base: tokens received before they have a price, fund payments, moves to and from exchanges, and exchange inflows of tokens ahead of their unlock |
+| Market Pulse | `pulse.py` | Sudden pumps and dumps measured against each coin's usual moves, with what the radar saw on that coin just before, sharp BTC moves, and large liquidations and cascades on Binance |
 
 `common.py` holds the shared code: config, HTTP with retries, Telegram, and
 the SQLite outbox. Every message goes through the outbox and is marked sent
@@ -57,6 +59,21 @@ too, so the scorecard shows whether combining signals actually helps.
 
 `python3 brain.py --coin APT` lists everything recorded on one coin.
 
+## Wallet Watch: who is who
+
+Wallets come from a public set of Etherscan labels (exchange wallets and a few
+funds and market makers), the Hyperliquid traders that whales.py tracks, and
+your own list. Free labels know exchanges well and funds only partly, so the
+most valuable step is adding fund wallets you find, for example on Arkham:
+
+```bash
+sudo -u radar python3 /opt/radar/chain.py --env /opt/radar/radar.env --add 0x... fund "Paradigm"
+sudo -u radar python3 /opt/radar/chain.py --env /opt/radar/radar.env --list
+```
+
+The most telling alert is EARLY TOKEN: a fund receiving a token that has no
+market price yet, which is how allocations arrive before a project lists.
+
 ## AI summaries (optional)
 
 With `pip3 install anthropic` and `ANTHROPIC_API_KEY` in `radar.env`, sent
@@ -94,7 +111,7 @@ restarts the services. The first run creates `/opt/radar/radar.env` from
 Useful commands:
 
 ```bash
-journalctl -u radar -u whales -u heat -u attention -u news -u flows -u brain -f
+journalctl -u radar -u whales -u heat -u attention -u news -u flows -u brain -u chain -u pulse -f
 sudo -u radar python3 /opt/radar/radar.py --env /opt/radar/radar.env --status
 sudo -u radar python3 /opt/radar/whales.py --env /opt/radar/radar.env --trader 0x...
 sudo -u radar python3 /opt/radar/whales.py --env /opt/radar/radar.env --report

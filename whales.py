@@ -122,6 +122,10 @@ def load_config() -> None:
     CFG["whale_count"] = env_int("HL_WHALE_COUNT", 150)
     # Monthly volume / account value above this = market maker, not a directional whale
     CFG["mm_max_turnover"] = env_float("HL_MM_MAX_TURNOVER", 50)
+    # Accounts with a public leaderboard name, tracked so their big moves and
+    # liquidations are reported even when they are not the very largest
+    CFG["named_max"] = env_int("HL_NAMED_MAX", 60)
+    CFG["named_min_account"] = env_float("HL_NAMED_MIN_ACCOUNT_USD", 250000)
     CFG["smart_candidates"] = env_int("HL_SMART_CANDIDATES", 200)
     CFG["smart_min_account"] = env_float("HL_SMART_MIN_ACCOUNT_USD", 100000)
     CFG["smart_max"] = env_int("HL_SMART_MAX", 30)
@@ -510,6 +514,7 @@ def refresh_traders(conn: sqlite3.Connection) -> None:
         month = window_perf(r, "month")
         all_time = window_perf(r, "allTime")
         parsed.append({"addr": addr, "value": value, "month": month, "all": all_time,
+                       "name": (r.get("displayName") or "").strip(),
                        "turnover": month["vlm"] / value if value > 0 else 0.0})
     del data, rows
     log("Leaderboard rows parsed: {}".format(len(parsed)))
@@ -526,7 +531,21 @@ def refresh_traders(conn: sqlite3.Connection) -> None:
             continue
         new_kinds[p["addr"]] = ("whale", json.dumps({
             "account_value": round(p["value"]), "pnl_all": round(p["all"]["pnl"]),
-            "pnl_month": round(p["month"]["pnl"]), "turnover": round(p["turnover"], 1)}))
+            "pnl_month": round(p["month"]["pnl"]), "turnover": round(p["turnover"], 1),
+            "name": p["name"]}))
+
+    # Named traders: accounts with a public leaderboard name (known people and funds)
+    named = 0
+    for p in sorted(parsed, key=lambda p: p["value"], reverse=True):
+        if named >= CFG["named_max"]:
+            break
+        if (not p["name"] or p["addr"] in new_kinds or p["value"] < CFG["named_min_account"]
+                or p["turnover"] > CFG["mm_max_turnover"]):
+            continue
+        named += 1
+        new_kinds[p["addr"]] = ("named", json.dumps({
+            "account_value": round(p["value"]), "pnl_all": round(p["all"]["pnl"]),
+            "pnl_month": round(p["month"]["pnl"]), "name": p["name"]}))
 
     candidates = [p for p in parsed
                   if p["value"] >= CFG["smart_min_account"] and p["month"]["pnl"] > 0
@@ -574,8 +593,9 @@ def refresh_traders(conn: sqlite3.Connection) -> None:
                "Whales (largest accounts): {}\n"
                "Market makers left out: {}\n"
                "Smart traders (passed filters): {} of {} candidates\n"
-               "Manual addresses: {}").format(n_whale, market_makers, len(smart),
-                                              len(candidates), n_manual)
+               "Manual addresses: {}\n"
+               "Named traders: {}").format(n_whale, market_makers, len(smart),
+                                           len(candidates), n_manual, named)
         if len(smart) < CFG["cons_min_traders"]:
             msg += ("\nWarning: fewer smart traders than the consensus minimum ({}). "
                     "Consensus alerts cannot fire until filters are relaxed.").format(
@@ -794,10 +814,20 @@ class Scanner:
         return alerts
 
 
+def trader_label(kind: str, score: Optional[str]) -> str:
+    """'whale' or 'named: BobbyBigSize' for alert texts."""
+    try:
+        name = (json.loads(score or "{}") or {}).get("name") or ""
+    except ValueError:
+        name = ""
+    return "{}: {}".format(kind, name) if name else kind
+
+
 def scan(conn: sqlite3.Connection, market: Market, profiles: Profiles) -> None:
     started = now_ms()
     since_ms = int(meta_get(conn, "last_scan_ms") or (started - 10 * 60 * 1000))
-    traders = conn.execute("SELECT addr, kind, scanned FROM traders").fetchall()
+    traders = [(addr, trader_label(kind, score), scanned) for addr, kind, score, scanned in
+               conn.execute("SELECT addr, kind, score, scanned FROM traders").fetchall()]
 
     # Read all positions in parallel (network bound), then process in order
     def fetch(addr: str) -> Optional[Tuple[Dict[str, dict], float]]:

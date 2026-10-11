@@ -62,6 +62,13 @@ UPBIT_URL = "https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&pe
 BYBIT_URL = "https://api.bybit.com/v5/announcements/index?locale=en-US&type=new_crypto&limit=20"
 OKX_URL = "https://www.okx.com/api/v5/support/announcements?annType=announcements-new-listings"
 COINBASE_URL = "https://api.exchange.coinbase.com/products"
+# Instrument lists: markets often appear here before the official announcement
+BINANCE_FUTURES_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+BINANCE_SPOT_INFO = "https://api.binance.com/api/v3/exchangeInfo?showPermissionSets=false&permissions=SPOT"
+BYBIT_PRELAUNCH = "https://api.bybit.com/v5/market/instruments-info?category={}&status=PreLaunch&limit=1000"
+OKX_INSTRUMENTS = "https://www.okx.com/api/v5/public/instruments?instType={}"
+UPBIT_MARKETS = "https://api.upbit.com/v1/market/all"
+BITHUMB_TICKERS = "https://api.bithumb.com/public/ticker/ALL_KRW"
 FEEDS = [
     ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
     ("The Block", "https://www.theblock.co/rss.xml"),
@@ -531,6 +538,101 @@ def okx_items(coins: Coins) -> List[Item]:
     return items
 
 
+def fmt_ms(ms: Any) -> str:
+    try:
+        return datetime.fromtimestamp(int(ms) / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError, OSError):
+        return "?"
+
+
+def prelisting_item(exchange: str, key: str, symbol: str, detail: str, coins: Coins,
+                    headline: str = "[PRE-LISTING] {ex}: {sym} market created before trading opens",
+                    note: str = "Seen in the exchange's own market list, usually before the announcement."
+                    ) -> Item:
+    text = (headline + "\n{detail}\n" + note).format(ex=exchange, sym=symbol, detail=detail)
+    ctx = coins.context(symbol) if len(symbol) >= 3 else ""
+    if ctx:
+        text += "\nCoin: " + ctx
+    return Item(key, text, ("prelisting_" + exchange.split()[0].lower(), 1, None, symbol))
+
+
+def binance_futures_prelist(coins: Coins) -> List[Item]:
+    items = []
+    for s in (get_json(BINANCE_FUTURES_INFO) or {}).get("symbols") or []:
+        # Crypto only (Binance also lists stock and commodity perps)
+        if s.get("underlyingType") not in (None, "COIN") or s.get("status") != "PENDING_TRADING":
+            continue
+        items.append(prelisting_item("Binance Futures", s["symbol"], s.get("baseAsset") or s["symbol"],
+                                     "Contract {} (pending), onboard {}".format(
+                                         s["symbol"], fmt_ms(s.get("onboardDate"))), coins))
+    return items
+
+
+def binance_spot_assets(coins: Coins) -> List[Item]:
+    """New base assets in Binance's spot list (they appear before the market opens)."""
+    by_base = {}  # type: Dict[str, List[dict]]
+    for s in (get_json(BINANCE_SPOT_INFO, timeout=120) or {}).get("symbols") or []:
+        by_base.setdefault(s.get("baseAsset") or "", []).append(s)
+    items = []
+    for base_asset, rows in sorted(by_base.items()):
+        if not base_asset:
+            continue
+        pairs = ", ".join("{} ({})".format(r["symbol"], r.get("status", "?").lower()) for r in rows[:4])
+        items.append(prelisting_item("Binance Spot", base_asset, base_asset, "Pairs: " + pairs, coins))
+    return items
+
+
+def bybit_prelaunch(coins: Coins) -> List[Item]:
+    items = []
+    for category in ("spot", "linear"):
+        data = get_json(BYBIT_PRELAUNCH.format(category))
+        for s in ((data or {}).get("result") or {}).get("list") or []:
+            if s.get("status") != "PreLaunch":
+                continue  # the spot endpoint ignores the status filter
+            base_coin = s.get("baseCoin") or s.get("symbol", "")
+            items.append(prelisting_item(
+                "Bybit", category + ":" + s.get("symbol", ""), base_coin,
+                "{} {} in pre-launch, launch {}".format(
+                    category, s.get("symbol"), fmt_ms(s.get("launchTime"))), coins))
+    return items
+
+
+def okx_preopen(coins: Coins) -> List[Item]:
+    items = []
+    for inst_type in ("SPOT", "SWAP"):
+        data = get_json(OKX_INSTRUMENTS.format(inst_type))
+        for i in (data or {}).get("data") or []:
+            # instCategory 1 = crypto; 3 and 4 are stocks and other assets
+            crypto = i.get("instCategory") == "1" or (not i.get("instCategory") and i.get("baseCcy"))
+            if i.get("state") != "preopen" or not crypto:
+                continue
+            base_ccy = i.get("baseCcy") or i.get("ctValCcy") or i["instId"].split("-")[0]
+            items.append(prelisting_item("OKX", i["instId"], base_ccy, "{} {} opens {}".format(
+                inst_type.lower(), i["instId"], fmt_ms(i.get("listTime"))), coins))
+    return items
+
+
+KOREA_HEADLINE = "[NEW KRW MARKET] {ex}: {sym} can now be traded against the Korean won"
+KOREA_NOTE = "Korean listings often move the price hard in the first hours."
+
+
+def korea_markets(coins: Coins) -> List[Item]:
+    """New KRW markets on Upbit and Bithumb (Korean listings often move prices hard)."""
+    items = []
+    for m in get_json(UPBIT_MARKETS) or []:
+        market = m.get("market") or ""
+        if market.startswith("KRW-"):
+            items.append(prelisting_item("Upbit", market, market[4:], "Market {} ({})".format(
+                market, m.get("english_name") or m.get("korean_name") or "?"), coins,
+                KOREA_HEADLINE, KOREA_NOTE))
+    data = (get_json(BITHUMB_TICKERS) or {}).get("data") or {}
+    for sym in sorted(data):
+        if sym != "date":
+            items.append(prelisting_item("Bithumb", "KRW-" + sym, sym, "Market {}/KRW".format(sym), coins,
+                                         KOREA_HEADLINE, KOREA_NOTE))
+    return items
+
+
 def coinbase_items(coins: Coins) -> List[Item]:
     """New base currencies in Coinbase's product list, often before the official post."""
     products = get_json(COINBASE_URL)
@@ -746,6 +848,10 @@ def cycle(conn: sqlite3.Connection, coins: Coins, telegram: Telegram) -> None:
         ("listing:bybit", lambda: bybit_items(coins)),
         ("listing:okx", lambda: okx_items(coins)),
         ("listing:coinbase", lambda: coinbase_items(coins)),
+        ("prelisting:binance-futures", lambda: binance_futures_prelist(coins)),
+        ("prelisting:bybit", lambda: bybit_prelaunch(coins)),
+        ("prelisting:okx", lambda: okx_preopen(coins)),
+        ("prelisting:korea", lambda: korea_markets(coins)),
         ("hacks", hack_items),
     ]
     for source, get_items in sources:
@@ -753,6 +859,13 @@ def cycle(conn: sqlite3.Connection, coins: Coins, telegram: Telegram) -> None:
             queued += queue_new(conn, source, get_items())
         except Exception as e:
             log("{} failed: {}".format(source, e))
+    if now_ms() - int(meta_get(conn, "binance_spot_ms") or 0) >= HOUR_MS:
+        try:
+            queued += queue_new(conn, "prelisting:binance-spot", binance_spot_assets(coins))
+        except Exception as e:
+            log("prelisting:binance-spot failed: {}".format(e))
+        with conn:
+            meta_set(conn, "binance_spot_ms", now_ms())
     queued += check_feeds(conn, coins)
     try:
         refresh_emissions(conn)

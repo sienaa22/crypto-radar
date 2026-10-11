@@ -758,6 +758,9 @@ def other_services() -> List[Tuple[str, str, int]]:
         ("Flow Watch", env_str("FLOWS_DB", "/opt/radar/flows.db"),
          3 * max(120, env_int("FLOWS_INTERVAL_SECONDS", 300)) * 1000),
         ("Signal Hub", env_str("BRAIN_DB", "/opt/radar/brain.db"), 10 * 60 * 1000),
+        ("Wallet Watch", env_str("CHAIN_DB", "/opt/radar/chain.db"),
+         3 * max(60, env_int("CHAIN_INTERVAL_SECONDS", 120)) * 1000),
+        ("Market Pulse", env_str("PULSE_DB", "/opt/radar/pulse.db"), 10 * 60 * 1000),
     ]
 
 
