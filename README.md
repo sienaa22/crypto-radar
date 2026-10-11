@@ -1,14 +1,15 @@
 # Crypto Radar
 
-Four small services that watch public data for early crypto signals and send
+Five small services that watch public data for early crypto signals and send
 them to Telegram. Python 3.8+ standard library only, no packages to install.
 
 | Service | Script | What it sends |
 |---|---|---|
-| Project Radar | `radar.py` | New projects in DefiLlama adapter PRs (TVL and fees/volume), new audit contests (Code4rena, Sherlock, CodeHawks, Hats Finance, Cantina), new Immunefi programs, and one daily status report for all four services |
+| Project Radar | `radar.py` | New projects in DefiLlama adapter PRs (TVL and fees/volume), new audit contests (Code4rena, Sherlock, CodeHawks, Hats Finance, Cantina), new Immunefi programs, and one daily status report for all services |
 | Whale Watch | `whales.py` | Big trades, quiet accumulation and liquidations of Hyperliquid whales and smart traders, rated by signal quality, plus smart-money consensus |
 | Heat Analyzer | `heat.py` | Daily list of DeFi protocols whose fees grow faster than their token price moved |
 | Attention Radar | `attention.py` | Daily list of coins that several independent sources point at |
+| News Watch | `news.py` | Token unlocks (large cliffs ahead, investor/team vesting ending), exchange listings (Binance, Upbit, Bybit, OKX, Coinbase), hacks, and important headlines from four news sites |
 
 `common.py` holds the shared code: config, HTTP with retries, Telegram, and
 the SQLite outbox. Every message goes through the outbox and is marked sent
@@ -37,6 +38,21 @@ well as HIGH ones, the filter is not helping and should be adjusted.
 Hedges on other exchanges cannot be seen from Hyperliquid data. The
 per-trader track record is the check for those.
 
+## News Watch scoring
+
+Headlines from CoinDesk, The Block, Decrypt and Cointelegraph get points for
+what they are about (hack 4, ETF decision 4, insolvency 4, exchange listing 3,
+lawsuit 3, unlock 2, tokenomics 2, ...), for naming a top coin, and for being
+carried by more than one outlet. Price analysis, opinion and court follow-ups
+of old cases lose points. Headlines at `NEWS_MIN_SCORE` (default 4) or more are
+sent, once per story. Check a headline with:
+
+```bash
+python3 news.py --score "Aptos token unlocks for investors end today"
+```
+
+`python3 news.py --unlocks` lists the unlock alerts the cached schedules give.
+
 ## Install or update on the server
 
 ```bash
@@ -52,7 +68,7 @@ restarts the services. The first run creates `/opt/radar/radar.env` from
 Useful commands:
 
 ```bash
-journalctl -u radar -u whales -u heat -u attention -f
+journalctl -u radar -u whales -u heat -u attention -u news -f
 sudo -u radar python3 /opt/radar/radar.py --env /opt/radar/radar.env --status
 sudo -u radar python3 /opt/radar/whales.py --env /opt/radar/radar.env --trader 0x...
 sudo -u radar python3 /opt/radar/whales.py --env /opt/radar/radar.env --report

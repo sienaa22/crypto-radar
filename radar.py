@@ -126,6 +126,7 @@ SCHEMA = """
 
 # An alert waiting to be queued: unique key within its source, and the message
 Item = namedtuple("Item", "key project link text")
+STARTED = "__started__"  # recorded on a source's first run, even when it had no items
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +507,8 @@ def check_listing(conn: sqlite3.Connection, source: str, items: List[Item]) -> T
     new_items = [i for i in items if not is_seen(conn, source, i.key)]
     if source_is_empty(conn, source):
         with conn:
+            # The marker ends the first run even when the source had no items yet
+            mark_seen(conn, source, STARTED)
             for item in new_items:
                 mark_seen(conn, source, item.key)
         return 0, len(new_items)
@@ -717,6 +720,8 @@ def other_services() -> List[Tuple[str, str, int]]:
         ("Whale Watch", env_str("HL_DB", "/opt/radar/whales.db"), max(15 * 60 * 1000, 5 * hl_gap)),
         ("Heat Analyzer", env_str("HEAT_DB", "/opt/radar/heat.db"), 2 * 3600 * 1000),
         ("Attention Radar", env_str("ATT_DB", "/opt/radar/attention.db"), 2 * 3600 * 1000),
+        ("News Watch", env_str("NEWS_DB", "/opt/radar/news.db"),
+         3 * max(120, env_int("NEWS_INTERVAL_SECONDS", 600)) * 1000),
     ]
 
 
