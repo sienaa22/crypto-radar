@@ -39,7 +39,8 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from common import (
     DAY_MS, NotFound, Telegram, ago, daily_due, env_int, env_str, heartbeat,
     http_json, http_request, load_env_file, log, meta_get, meta_set, now_ms,
-    open_db, open_db_readonly, outbox_add, outbox_count_since, outbox_flush, today_str,
+    open_db, open_db_readonly, outbox_add, outbox_count_since, outbox_flush, record_signal,
+    today_str,
 )
 
 USER_AGENT = "project-radar/2.0 (personal research script)"
@@ -200,8 +201,19 @@ def mark_seen(conn: sqlite3.Connection, source: str, key: str) -> None:
                  (source, key, now_iso()))
 
 
+def ledger_kind(source: str) -> str:
+    if source.startswith("audit_") or source == "cantina":
+        return "audit_contest"
+    if source == "immunefi":
+        return "bug_bounty"
+    return "new_project"
+
+
 def queue_alert(conn: sqlite3.Connection, source: str, item: Item) -> None:
     """Marks the item as seen and queues its message, both or neither."""
+    # No token yet in most cases, so these are counted in the ledger but not priced
+    record_signal("radar", ledger_kind(source), item.text.splitlines()[0] + ": " + item.project,
+                  link=item.link)
     with conn:
         mark_seen(conn, source, item.key)
         conn.execute("INSERT INTO alerts (sent_at, source, project, url, details)"
@@ -408,6 +420,7 @@ def process_pr(conn: sqlite3.Connection, gh: GitHub, source: str, repo: str, lab
             listed="unknown (list not loaded)" if listed is None else "no",
             chains=short_list(guess_chains(own_text), 6),
             addrs=short_list(addresses, 4), link=link)
+        record_signal("radar", "new_project", "DefiLlama {}: {}".format(label, name), link=link)
         # Seen under the shared project namespace, logged under this repo's source
         with conn:
             mark_seen(conn, SEEN_PROJECTS, key)
@@ -742,6 +755,9 @@ def other_services() -> List[Tuple[str, str, int]]:
         ("Attention Radar", env_str("ATT_DB", "/opt/radar/attention.db"), 2 * 3600 * 1000),
         ("News Watch", env_str("NEWS_DB", "/opt/radar/news.db"),
          3 * max(120, env_int("NEWS_INTERVAL_SECONDS", 600)) * 1000),
+        ("Flow Watch", env_str("FLOWS_DB", "/opt/radar/flows.db"),
+         3 * max(120, env_int("FLOWS_INTERVAL_SECONDS", 300)) * 1000),
+        ("Signal Hub", env_str("BRAIN_DB", "/opt/radar/brain.db"), 10 * 60 * 1000),
     ]
 
 

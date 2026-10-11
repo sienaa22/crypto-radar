@@ -1,6 +1,6 @@
 # Crypto Radar
 
-Five small services that watch public data for early crypto signals and send
+Seven small services that watch public data for early crypto signals and send
 them to Telegram. Python 3.8+ standard library only, no packages to install.
 
 | Service | Script | What it sends |
@@ -9,6 +9,8 @@ them to Telegram. Python 3.8+ standard library only, no packages to install.
 | Whale Watch | `whales.py` | Big trades, quiet accumulation and liquidations of Hyperliquid whales and smart traders, rated by signal quality, plus smart-money consensus |
 | Heat Analyzer | `heat.py` | Daily list of DeFi protocols whose fees grow faster than their token price moved |
 | Attention Radar | `attention.py` | Daily list of coins that several independent sources point at |
+| Flow Watch | `flows.py` | Binance futures positioning (open-interest build-ups, crowded funding, top traders against the crowd) and USDT/USDC supply read from Ethereum and Tron |
+| Signal Hub | `brain.py` | Prices every signal from every service, scores each kind against BTC after 1 and 7 days, learns weights from that, and sends CONVERGENCE alerts when independent signals line up on one coin |
 | News Watch | `news.py` | Token unlocks (large cliffs ahead, investor/team vesting ending), exchange listings (Binance, Upbit, Bybit, OKX, Coinbase), hacks, and important headlines from four news sites |
 
 `common.py` holds the shared code: config, HTTP with retries, Telegram, and
@@ -37,6 +39,30 @@ well as HIGH ones, the filter is not helping and should be adjusted.
 
 Hedges on other exchanges cannot be seen from Hyperliquid data. The
 per-trader track record is the check for those.
+
+## Signal Hub: measuring and combining
+
+Every service writes what it alerted on to one shared ledger (`signals.db`):
+the kind of signal, the coin, and whether it points up, down, or only means
+attention. The hub records the price when it fired and again after 1 and 7
+days, next to BTC. The weekly scorecard (Mondays, or `python3 brain.py
+--scorecard`) shows per kind how often it was right and by how much it beat
+BTC, and labels it USEFUL, noise, or INVERSE (reliably wrong, so worth fading).
+
+From the scorecard each kind gets a weight: 1.0 until it has a record, up to
+2.0 when it beats BTC, down to 0.2 when it does not. When at least 3 signals
+from at least 2 services land on the same coin within 48 hours, the hub sends
+one CONVERGENCE alert with the weighted direction. Convergences are measured
+too, so the scorecard shows whether combining signals actually helps.
+
+`python3 brain.py --coin APT` lists everything recorded on one coin.
+
+## AI summaries (optional)
+
+With `pip3 install anthropic` and `ANTHROPIC_API_KEY` in `radar.env`, sent
+news and convergence alerts get a short Persian summary with the likely
+impact, and the AI's direction is used for the headline's signal. Without
+them, alerts go out unchanged. `AI_MAX_CALLS_PER_DAY` caps the cost.
 
 ## News Watch scoring
 
@@ -68,11 +94,12 @@ restarts the services. The first run creates `/opt/radar/radar.env` from
 Useful commands:
 
 ```bash
-journalctl -u radar -u whales -u heat -u attention -u news -f
+journalctl -u radar -u whales -u heat -u attention -u news -u flows -u brain -f
 sudo -u radar python3 /opt/radar/radar.py --env /opt/radar/radar.env --status
 sudo -u radar python3 /opt/radar/whales.py --env /opt/radar/radar.env --trader 0x...
 sudo -u radar python3 /opt/radar/whales.py --env /opt/radar/radar.env --report
 sudo -u radar python3 /opt/radar/heat.py --env /opt/radar/radar.env --report
+sudo -u radar python3 /opt/radar/brain.py --env /opt/radar/radar.env --scorecard
 ```
 
 Existing databases are upgraded in place on the first start.

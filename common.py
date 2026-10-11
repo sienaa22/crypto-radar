@@ -380,3 +380,58 @@ def outbox_flush(conn: sqlite3.Connection, telegram: Telegram) -> int:
 def outbox_count_since(conn: sqlite3.Connection, since_ms: int) -> int:
     row = conn.execute("SELECT COUNT(*) FROM outbox WHERE created_ms >= ?", (since_ms,)).fetchone()
     return int(row[0])
+
+
+# ---------------------------------------------------------------------------
+# Shared signal ledger (read by brain.py)
+# ---------------------------------------------------------------------------
+
+# Every service records what it alerted on here. brain.py prices each signal,
+# checks it again after 1 and 7 days, scores each kind of signal, and sends an
+# alert when independent signals line up on the same coin.
+SIGNALS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        service TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        coin TEXT,                  -- CoinGecko id, filled by brain.py from symbol if missing
+        symbol TEXT,
+        direction INTEGER NOT NULL DEFAULT 0,   -- +1 bullish, -1 bearish, 0 attention only
+        strength REAL NOT NULL DEFAULT 1.0,
+        title TEXT NOT NULL,
+        link TEXT,
+        p0 REAL, btc0 REAL, p1d REAL, btc1d REAL, p7d REAL, btc7d REAL,
+        tries INTEGER NOT NULL DEFAULT 0);
+    CREATE INDEX IF NOT EXISTS idx_signals_coin ON signals (coin, ts);
+    CREATE INDEX IF NOT EXISTS idx_signals_kind ON signals (kind);
+"""
+
+_SIGNALS = {}  # type: Dict[str, sqlite3.Connection]
+
+
+def signals_db() -> sqlite3.Connection:
+    path = env_str("SIGNALS_DB", "/opt/radar/signals.db")
+    if path not in _SIGNALS:
+        conn = sqlite3.connect(path, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(SIGNALS_SCHEMA)
+        conn.commit()
+        _SIGNALS[path] = conn
+    return _SIGNALS[path]
+
+
+def record_signal(service: str, kind: str, title: str, direction: int = 0,
+                  coin: Optional[str] = None, symbol: Optional[str] = None,
+                  strength: float = 1.0, link: str = "") -> None:
+    """Adds a signal to the shared ledger. Never raises: alerts matter more."""
+    try:
+        conn = signals_db()
+        with conn:
+            conn.execute(
+                "INSERT INTO signals (ts, service, kind, coin, symbol, direction, strength, title, link)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (now_ms(), service, kind, coin or None, (symbol or "").upper() or None,
+                 max(-1, min(1, int(direction))), float(strength), title[:300], link or ""))
+    except Exception as e:
+        log("Signal not recorded ({} {}): {}".format(service, kind, e))

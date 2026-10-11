@@ -42,10 +42,11 @@ from collections import namedtuple
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import ai
 from common import (
     DAY_MS, HOUR_MS, Telegram, env_float, env_int, env_str, fnum, heartbeat,
     http_json, load_env_file, log, meta_get, meta_set, now_ms, open_db, outbox_add,
-    outbox_flush, usd,
+    outbox_flush, record_signal, usd,
 )
 
 USER_AGENT = "news-watch/1.0 (personal research script)"
@@ -137,7 +138,8 @@ def fmt_tokens(x: float) -> str:
 # Seen items (each source starts silently)
 # ---------------------------------------------------------------------------
 
-Item = namedtuple("Item", "key text")
+# signal: (kind, direction, coin id, symbol) for the shared ledger, or None
+Item = namedtuple("Item", "key text signal", defaults=(None,))
 STARTED = "__started__"  # recorded on a source's first run, even when it had no items
 
 
@@ -167,6 +169,11 @@ def queue_new(conn: sqlite3.Connection, source: str, items: List[Item],
             if not first_run:
                 outbox_add(conn, item.text)
                 queued += 1
+                if item.signal:
+                    kind, direction, coin, symbol = item.signal
+                    record_signal("news", kind, item.text.splitlines()[0][:200] + " " +
+                                  " ".join(item.text.splitlines()[1:2])[:100],
+                                  direction=direction, coin=coin, symbol=symbol)
     return queued
 
 
@@ -316,6 +323,20 @@ STORY_STOP = {"Crypto", "Bitcoin", "Ethereum", "Here", "What", "This", "That", "
               "Over", "Says", "From", "Report", "Reports", "Million", "Billion", "Week", "Today"}
 
 
+# Which way a headline points, by the first matching reason
+DIRECTION_BY_REASON = [
+    ("unlocks ending", 1), ("hack", -1), ("insolvency", -1), ("delisting", -1), ("legal", -1),
+    ("exchange listing", 1), ("token unlock", -1), ("tokenomics", 1),
+]
+
+
+def news_direction(reasons: List[str]) -> int:
+    for label, direction in DIRECTION_BY_REASON:
+        if label in reasons:
+            return direction
+    return 0
+
+
 def story_of(reasons: List[str], named: List[dict], title: str) -> Tuple[str, Set[str]]:
     """(kind of event, names that identify the story: coins and proper nouns in the title)."""
     kind = next((r for r in reasons if not r.startswith("names") and "summary" not in r), "other")
@@ -383,6 +404,7 @@ def check_feeds(conn: sqlite3.Connection, coins: Coins) -> int:
                 continue
             score, reasons, named = score_headline(it["title"], it["summary"], coins)
             kind, names = story_of(reasons, named, it["title"])
+            pending = []  # type: List[str]
             with conn:
                 conn.execute("INSERT INTO seen (source, item_key, ts) VALUES (?, ?, ?)",
                              (source, it["link"], now_ms()))
@@ -398,17 +420,25 @@ def check_feeds(conn: sqlite3.Connection, coins: Coins) -> int:
                     " VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (now_ms(), outlet, it["title"], it["link"],
                      kind + "|" + " ".join(sorted(names)), score, int(send)))
-                if not send:
-                    continue
-                lines = ["[NEWS] " + it["title"],
-                         "Source: {}{}".format(outlet, " (+{} more)".format(n_other) if n_other else ""),
-                         "Why: " + ", ".join(reasons) + " | score {:.0f}".format(score)]
-                ctx = coins.context(it["title"] + ". " + it["summary"][:300])
-                if ctx:
-                    lines.append("Coin: " + ctx)
-                lines.append("Link: " + it["link"])
-                outbox_add(conn, "\n".join(lines))
-                queued += 1
+                if send:
+                    pending = ["[NEWS] " + it["title"],
+                               "Source: {}{}".format(outlet, " (+{} more)".format(n_other) if n_other else ""),
+                               "Why: " + ", ".join(reasons) + " | score {:.0f}".format(score)]
+                    ctx = coins.context(it["title"] + ". " + it["summary"][:300])
+                    if ctx:
+                        pending.append("Coin: " + ctx)
+                    pending.append("Link: " + it["link"])
+            if not pending:
+                continue
+            # Outside the transaction: the AI call can take a few seconds
+            text = "\n".join(pending)
+            brief = ai.brief(conn, text + "\nSummary: " + it["summary"][:600])
+            with conn:
+                outbox_add(conn, text + ai.format_brief(brief))
+            record_signal("news", "news_" + kind.split(" (")[0].replace(" ", "_").replace("/", "_"),
+                          it["title"], direction=ai.direction(brief) or news_direction(reasons),
+                          coin=named[0]["id"] if named else None, link=it["link"])
+            queued += 1
     with conn:
         conn.execute("DELETE FROM headlines WHERE ts < ?", (now_ms() - 7 * DAY_MS,))
     return queued
@@ -417,6 +447,18 @@ def check_feeds(conn: sqlite3.Connection, coins: Coins) -> int:
 # ---------------------------------------------------------------------------
 # Exchange listings and hacks
 # ---------------------------------------------------------------------------
+
+TICKER_IN_BRACKETS = re.compile(r"\(([A-Z0-9]{2,12})\)")
+
+
+def listing_signal(exchange: str, title: str, coins: Coins, symbol: str = "") -> tuple:
+    named = coins.find(title)
+    if not symbol:
+        m = TICKER_IN_BRACKETS.search(title)
+        symbol = m.group(1) if m else ""
+    return ("listing_" + exchange.split()[0].lower(), 1,
+            named[0]["id"] if named and not symbol else None, symbol or None)
+
 
 def listing_text(exchange: str, title: str, link: str, coins: Coins) -> str:
     lines = ["[LISTING] " + exchange, title]
@@ -436,7 +478,8 @@ def binance_items(coins: Coins) -> List[Item]:
         if not a.get("code") or NOT_CRYPTO_RE.search(title):
             continue
         link = "https://www.binance.com/en/support/announcement/" + a["code"]
-        items.append(Item(a["code"], listing_text("Binance", title, link, coins)))
+        items.append(Item(a["code"], listing_text("Binance", title, link, coins),
+                          listing_signal("Binance", title, coins)))
     return items
 
 
@@ -458,7 +501,7 @@ def upbit_items(coins: Coins) -> List[Item]:
         link = "https://upbit.com/service_center/notice?id={}".format(n["id"])
         text = listing_text("Upbit (Korea)", title, link, coins).replace(
             "\nLink:", "\nOriginal: {}\nLink:".format(n["title"]), 1)
-        items.append(Item(str(n["id"]), text))
+        items.append(Item(str(n["id"]), text, listing_signal("Upbit", title, coins, sym)))
     return items
 
 
@@ -470,7 +513,8 @@ def bybit_items(coins: Coins) -> List[Item]:
         title = a.get("title") or ""
         if not a.get("url") or NOT_CRYPTO_RE.search(title):
             continue
-        items.append(Item(a["url"], listing_text("Bybit", title, a["url"], coins)))
+        items.append(Item(a["url"], listing_text("Bybit", title, a["url"], coins),
+                          listing_signal("Bybit", title, coins)))
     return items
 
 
@@ -482,7 +526,8 @@ def okx_items(coins: Coins) -> List[Item]:
         title = a.get("title") or ""
         if not a.get("url") or NOT_CRYPTO_RE.search(title):
             continue
-        items.append(Item(a["url"], listing_text("OKX", title, a["url"], coins)))
+        items.append(Item(a["url"], listing_text("OKX", title, a["url"], coins),
+                          listing_signal("OKX", title, coins)))
     return items
 
 
@@ -500,7 +545,8 @@ def coinbase_items(coins: Coins) -> List[Item]:
                                    p.get("status") or "?") for p in ps}))
         title = "Coinbase added {}: {} ({})".format(base, ", ".join(sorted(p["id"] for p in ps)), state)
         link = "https://www.coinbase.com/advanced-trade/spot/{}".format(ps[0]["id"])
-        items.append(Item(base, listing_text("Coinbase", title, link, coins)))
+        items.append(Item(base, listing_text("Coinbase", title, link, coins),
+                          listing_signal("Coinbase", title, coins, base)))
     return items
 
 
@@ -519,7 +565,8 @@ def hack_items() -> List[Item]:
                     chain=", ".join(h.get("chain") or []) or "?",
                     kind=h.get("targetType") or h.get("classification") or "?",
                     technique=" - " + h["technique"] if h.get("technique") else "")
-        items.append(Item("{}:{}".format(h.get("name"), h.get("date")), text))
+        items.append(Item("{}:{}".format(h.get("name"), h.get("date")), text,
+                          ("hack", -1, None, None)))
     return items
 
 
@@ -653,7 +700,8 @@ def unlock_items(conn: sqlite3.Connection) -> List[Item]:
                 "Link: https://defillama.com/unlocks/{slug}").format(
                     name=s["name"], tokens=fmt_tokens(e["tokens"]), value=usd(value), share=share,
                     date=fmt_date(e["ts"]), soon=" (within 24h)" if when == "1d" else "",
-                    group=e["category"] or "?", detail=e["text"], head=head, slug=slug)))
+                    group=e["category"] or "?", detail=e["text"], head=head, slug=slug),
+                ("unlock_cliff", -1, s["gecko_id"], None)))
 
         # 2. Investor and team vesting ends: the selling pressure from insiders stops
         end = s["insider_end"]
@@ -673,7 +721,8 @@ def unlock_items(conn: sqlite3.Connection) -> List[Item]:
                     name=s["name"], date=fmt_date(end),
                     left="within 24h" if when == "1d" else "in {:.0f} days".format(days_left),
                     left_tokens=fmt_tokens(s["insider_left"]), left_value=usd(s["insider_left"] * price),
-                    progress=progress or "?", head=head, slug=slug)))
+                    progress=progress or "?", head=head, slug=slug),
+                ("unlock_vesting_end", 1, s["gecko_id"], None)))
     return items
 
 

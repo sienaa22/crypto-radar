@@ -6,8 +6,8 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST=/opt/radar
-SCRIPTS="common.py radar.py whales.py heat.py attention.py news.py"
-SERVICES="radar whales heat attention news"
+SCRIPTS="common.py ai.py radar.py whales.py heat.py attention.py news.py flows.py brain.py"
+SERVICES="radar whales heat attention news flows brain"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run with sudo: sudo $0" >&2
@@ -33,6 +33,12 @@ for f in $SCRIPTS; do
     install -o radar -g radar -m 640 "$SRC/$f" "$DEST/$f"
 done
 
+# The AI summaries need the official Anthropic SDK; everything else runs without it
+if ! python3 -c "import anthropic" 2>/dev/null; then
+    echo "Note: the anthropic package is not installed, so AI summaries stay off."
+    echo "      To turn them on: sudo pip3 install anthropic, and set ANTHROPIC_API_KEY in radar.env"
+fi
+
 if [ -f "$DEST/radar.env" ]; then
     chown radar:radar "$DEST/radar.env"
     chmod 600 "$DEST/radar.env"
@@ -54,4 +60,4 @@ done
 sleep 3
 systemctl --no-pager --lines=0 status $SERVICES || true
 echo
-echo "Follow the logs with:  journalctl -u radar -u whales -u heat -u attention -u news -f"
+echo "Follow the logs with:  journalctl -u radar -u whales -u heat -u attention -u news -u flows -u brain -f"

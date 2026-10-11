@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from common import (
     DAY_MS, Telegram, daily_due, env_float, env_int, env_str, fnum, heartbeat,
     http_json, load_env_file, log, meta_get, meta_set, now_ms, open_db, outbox_add,
-    outbox_flush, pct, today_str, usd,
+    outbox_flush, pct, record_signal, today_str, usd,
 )
 
 USER_AGENT = "heat-analyzer/2.0 (personal research script)"
@@ -282,6 +282,10 @@ def log_signals(conn: sqlite3.Connection, candidates: List[dict]) -> None:
             """, (now_ms(), date, c["slug"], c["name"], c["category"], c["gecko_id"],
                   c["fee_accel"], c["rev_accel"], c["retention"], c["pf"], c["rel_pf"],
                   c["price_30d"], c["price_vs_cat"], c["gap"], c["momentum_7d"], c["mcap"]))
+            record_signal("heat", "heat_fees_accel",
+                          "{}: fees {:+.0f}% vs prior 30d, price {:+.0f}% vs category".format(
+                              c["name"], (c["fee_accel"] - 1) * 100, c["price_vs_cat"]),
+                          direction=1, coin=c["gecko_id"])
 
 
 def format_report(candidates: List[dict], counts: Dict[str, int]) -> str:

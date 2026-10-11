@@ -48,7 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from common import (
     DAY_MS, HOUR_MS, Telegram, daily_due, env_float, env_int, env_str, fnum,
     heartbeat, http_json, load_env_file, log, meta_get, meta_set, now_ms,
-    open_db, outbox_add, outbox_flush, pct, px, short_addr, usd,
+    open_db, outbox_add, outbox_flush, pct, px, record_signal, short_addr, usd,
 )
 
 USER_AGENT = "whale-watch/2.0 (personal research script)"
@@ -643,6 +643,12 @@ class Scanner:
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (now_ms(), addr, kind, coin, side, added, a["quality"], int(send), mark,
              self.market.price("BTC")))
+        # LOW trades go to the ledger too, so the scorecard shows whether the filter is right
+        record_signal("whales", "whale_trade_" + a["quality"].lower(),
+                      "{} {} +{} by {} ({})".format(coin, side, usd(added), short_addr(addr), kind),
+                      direction=1 if side == "LONG" else -1, symbol=coin,
+                      strength={"HIGH": 1.5, "MEDIUM": 1.0, "LOW": 0.3}[a["quality"]],
+                      link=EXPLORER_URL + addr)
         if not send:
             log("Big trade not sent ({}): {} {} {} by {} - {}".format(
                 a["quality"], coin, side, usd(added), short_addr(addr), "; ".join(a["bad"])))
@@ -779,6 +785,11 @@ class Scanner:
             lines += trader_lines(self.conn, addr, coin, c, a)
             lines.append("Link: " + EXPLORER_URL + addr)
             outbox_add(self.conn, "\n".join(lines))
+            record_signal("whales", "whale_accumulation",
+                          "{} {} grew {} -> {} by {}".format(coin, side, usd(old_value), usd(c["value"]),
+                                                             short_addr(addr)),
+                          direction=1 if side == "LONG" else -1, symbol=coin,
+                          strength=1.5 if a["quality"] == "HIGH" else 1.0, link=EXPLORER_URL + addr)
             alerts += 1
         return alerts
 
@@ -889,6 +900,9 @@ def check_consensus(conn: sqlite3.Connection, market: Market) -> None:
                     "Logged for paper-trade test (checked again at 24h and 72h).").format(
                         coin=coin, side=side, n=n, total=n_smart, sidel=side.lower(),
                         ratio=ratio, a=usd(a), b=usd(b), p0=px(p0) if p0 else "?"))
+            record_signal("whales", "whale_consensus",
+                          "{} of {} smart traders opened {} on {}".format(n, n_smart, side.lower(), coin),
+                          direction=1 if side == "LONG" else -1, symbol=coin, strength=1.5)
 
 
 def update_forward_prices(conn: sqlite3.Connection, market: Market) -> None:

@@ -11,6 +11,10 @@ from typing import Callable, Dict, List, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.dont_write_bytecode = True
 
+# Every test run writes its signal ledger to a temporary file, never /opt/radar
+os.environ["SIGNALS_DB"] = os.path.join(tempfile.mkdtemp(), "signals.db")
+os.environ.pop("ANTHROPIC_API_KEY", None)
+
 import common  # noqa: E402
 
 # Tests never wait for retries or Telegram pacing
